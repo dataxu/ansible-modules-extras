@@ -83,6 +83,13 @@ options:
     required: false
     default: []
     version_added: "2.1"
+  tags:
+    version_added: "2.3"
+    description:
+      - a hash/dictionary of tags to add to the new instance or for starting/stopping instance by tag; '{"key":"value"}' and '{"key":"value","key":"value"}'
+    required: false
+    default: null
+    aliases: []
 extends_documentation_fragment:
     - aws
     - ec2
@@ -158,6 +165,12 @@ try:
 except ImportError:
     HAS_BOTO = False
 
+try:
+    import botocore
+    HAS_BOTO3 = True
+except ImportError:
+    HAS_BOTO3 = False
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.ec2 import AnsibleAWSError, connect_to_aws, ec2_argument_spec, get_aws_connection_info
 
@@ -168,7 +181,7 @@ INDEX_OPTIONS = INDEX_REQUIRED_OPTIONS + ['hash_key_type', 'range_key_name', 'ra
 INDEX_TYPE_OPTIONS = ['all', 'global_all', 'global_include', 'global_keys_only', 'include', 'keys_only']
 
 
-def create_or_update_dynamo_table(connection, module):
+def create_or_update_dynamo_table(connection, module, boto3_ec2=None, boto3_iam=None):
     table_name = module.params.get('name')
     hash_key_name = module.params.get('hash_key_name')
     hash_key_type = module.params.get('hash_key_type')
@@ -177,6 +190,7 @@ def create_or_update_dynamo_table(connection, module):
     read_capacity = module.params.get('read_capacity')
     write_capacity = module.params.get('write_capacity')
     all_indexes = module.params.get('indexes')
+    tags = module.params.get('tags')
 
     for index in all_indexes:
         validate_index(index, module)
@@ -221,6 +235,15 @@ def create_or_update_dynamo_table(connection, module):
         module.fail_json(**result)
     else:
         module.exit_json(**result)
+
+    if tags:
+        account_id = get_account_id(boto3_iam)
+        boto3_ec2.tag_resource(ResourceArn='arn:aws:dynamodb:' + region + ':' + account_id + ':table/' + table_name, Tags=tags)
+
+
+def get_account_id(boto3_iam):
+    users = boto3_iam.list_users(MaxItems=1)
+    return users['Users'][0]['Arn'].split(':')[4]
 
 
 def delete_dynamo_table(connection, module):
@@ -274,14 +297,14 @@ def update_dynamo_table(table, throughput=None, check_mode=False, global_indexes
     removed_indexes, added_indexes, index_throughput_changes = get_changed_global_indexes(table, global_indexes)
     if removed_indexes:
         if not check_mode:
-            for name, index in removed_indexes.iteritems():
+            for name, index in removed_indexes.items():
                 global_indexes_changed = table.delete_global_secondary_index(name) or global_indexes_changed
         else:
             global_indexes_changed = True
 
     if added_indexes:
         if not check_mode:
-            for name, index in added_indexes.iteritems():
+            for name, index in added_indexes.items():
                 global_indexes_changed = table.create_global_secondary_index(global_index=index) or global_indexes_changed
         else:
             global_indexes_changed = True
@@ -328,23 +351,23 @@ def get_changed_global_indexes(table, global_indexes):
     set_index_info = dict((index.name, index.schema()) for index in global_indexes)
     set_index_objects = dict((index.name, index) for index in global_indexes)
 
-    removed_indexes = dict((name, index) for name, index in table_index_info.iteritems() if name not in set_index_info)
-    added_indexes = dict((name, set_index_objects[name]) for name, index in set_index_info.iteritems() if name not in table_index_info)
+    removed_indexes = dict((name, index) for name, index in table_index_info.items() if name not in set_index_info)
+    added_indexes = dict((name, set_index_objects[name]) for name, index in set_index_info.items() if name not in table_index_info)
     # todo: uncomment once boto has https://github.com/boto/boto/pull/3447 fixed
-    # index_throughput_changes = dict((name, index.throughput) for name, index in set_index_objects.iteritems() if name not in added_indexes and (index.throughput['read'] != str(table_index_objects[name].throughput['read']) or index.throughput['write'] != str(table_index_objects[name].throughput['write'])))
+    # index_throughput_changes = dict((name, index.throughput) for name, index in set_index_objects.items() if name not in added_indexes and (index.throughput['read'] != str(table_index_objects[name].throughput['read']) or index.throughput['write'] != str(table_index_objects[name].throughput['write'])))
     # todo: remove once boto has https://github.com/boto/boto/pull/3447 fixed
-    index_throughput_changes = dict((name, index.throughput) for name, index in set_index_objects.iteritems() if name not in added_indexes)
+    index_throughput_changes = dict((name, index.throughput) for name, index in set_index_objects.items() if name not in added_indexes)
 
     return removed_indexes, added_indexes, index_throughput_changes
 
 
 def validate_index(index, module):
-    for key, val in index.iteritems():
+    for key, val in index.items():
         if key not in INDEX_OPTIONS:
             module.fail_json(msg='%s is not a valid option for an index' % key)
     for required_option in INDEX_REQUIRED_OPTIONS:
         if required_option not in index:
-           module.fail_json(msg='%s is a required option for an index' % required_option)
+            module.fail_json(msg='%s is a required option for an index' % required_option)
     if index['type'] not in INDEX_TYPE_OPTIONS:
         module.fail_json(msg='%s is not a valid index type, must be one of %s' % (index['type'], INDEX_TYPE_OPTIONS))
 
@@ -393,6 +416,7 @@ def main():
         read_capacity=dict(default=1, type='int'),
         write_capacity=dict(default=1, type='int'),
         indexes=dict(default=[], type='list'),
+        tags = dict(type='dict'),
     ))
 
     module = AnsibleModule(
@@ -401,6 +425,9 @@ def main():
 
     if not HAS_BOTO:
         module.fail_json(msg='boto required for this module')
+
+    if not HAS_BOTO3 and module.params.get('tags'):
+        module.fail_json(msg='boto3 required when using tags for this module')
 
     region, ec2_url, aws_connect_params = get_aws_connection_info(module)
     if not region:
@@ -411,9 +438,20 @@ def main():
     except (NoAuthHandlerFound, AnsibleAWSError) as e:
         module.fail_json(msg=str(e))
 
+    if module.params.get('tags'):
+        try:
+            region, ec2_url, aws_connect_kwargs = ansible.module_utils.ec2.get_aws_connection_info(module, boto3=True)
+            boto3_ec2 = ansible.module_utils.ec2.boto3_conn(module, conn_type='client', resource='ec2', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+            boto3_iam = ansible.module_utils.ec2.boto3_conn(module, conn_type='client', resource='iam', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+        except botocore.exceptions.NoCredentialsError as e:
+            module.fail_json(msg='cannot connect to AWS', exception=traceback.format_exc(e))
+    else:
+        boto3_ec2 = None
+        boto3_iam = None
+
     state = module.params.get('state')
     if state == 'present':
-        create_or_update_dynamo_table(connection, module)
+        create_or_update_dynamo_table(connection, module, boto3_ec2, boto3_iam)
     elif state == 'absent':
         delete_dynamo_table(connection, module)
 

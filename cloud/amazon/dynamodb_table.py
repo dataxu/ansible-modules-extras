@@ -167,6 +167,7 @@ except ImportError:
 
 try:
     import botocore
+    from ansible.module_utils.ec2 import get_aws_connection_info, boto3_conn
     HAS_BOTO3 = True
 except ImportError:
     HAS_BOTO3 = False
@@ -440,9 +441,9 @@ def main():
 
     if module.params.get('tags'):
         try:
-            region, ec2_url, aws_connect_kwargs = ansible.module_utils.ec2.get_aws_connection_info(module, boto3=True)
-            boto3_ec2 = ansible.module_utils.ec2.boto3_conn(module, conn_type='client', resource='ec2', region=region, endpoint=ec2_url, **aws_connect_kwargs)
-            boto3_iam = ansible.module_utils.ec2.boto3_conn(module, conn_type='client', resource='iam', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+            region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module, boto3=True)
+            boto3_ec2 = boto3_conn(module, conn_type='client', resource='ec2', region=region, endpoint=ec2_url, **aws_connect_kwargs)
+            boto3_iam = boto3_conn(module, conn_type='client', resource='iam', region=region, endpoint=ec2_url, **aws_connect_kwargs)
         except botocore.exceptions.NoCredentialsError as e:
             module.fail_json(msg='cannot connect to AWS', exception=traceback.format_exc(e))
     else:

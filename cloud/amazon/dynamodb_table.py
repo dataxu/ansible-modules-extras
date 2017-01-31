@@ -144,6 +144,7 @@ table_status:
     sample: ACTIVE
 '''
 
+import logging
 import traceback
 
 try:
@@ -238,8 +239,13 @@ def create_or_update_dynamo_table(connection, module, boto3_ec2=None, boto3_iam=
         module.exit_json(**result)
 
     if tags:
+        print "creating tags:", tags
+        logging.debug("creating tags:" + str(tags))
         account_id = get_account_id(boto3_iam)
         boto3_ec2.tag_resource(ResourceArn='arn:aws:dynamodb:' + region + ':' + account_id + ':table/' + table_name, Tags=tags)
+    else:
+        print "really not creating tags:"
+        logging.debug("really not creating tags:")
 
 
 def get_account_id(boto3_iam):
@@ -441,12 +447,17 @@ def main():
 
     if module.params.get('tags'):
         try:
+            print "adding tags:", module.params.get('tags')
+            logging.debug("adding tags:" + str(module.params.get('tags')))
             region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module, boto3=True)
             boto3_ec2 = boto3_conn(module, conn_type='client', resource='ec2', region=region, endpoint=ec2_url, **aws_connect_kwargs)
             boto3_iam = boto3_conn(module, conn_type='client', resource='iam', region=region, endpoint=ec2_url, **aws_connect_kwargs)
         except botocore.exceptions.NoCredentialsError as e:
             module.fail_json(msg='cannot connect to AWS', exception=traceback.format_exc(e))
     else:
+        print "not adding tags:", module.params.get('tags')
+        logging.debug("not adding tags:" + str(module.params.get('tags')))
+        module.fail_json(msg='corey exit')
         boto3_ec2 = None
         boto3_iam = None
 

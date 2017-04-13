@@ -172,6 +172,7 @@ except ImportError:
 
 try:
     import botocore
+    from ansible.module_utils.ec2 import ansible_dict_to_boto3_tag_list, boto3_conn
     HAS_BOTO3 = True
 except ImportError:
     HAS_BOTO3 = False
